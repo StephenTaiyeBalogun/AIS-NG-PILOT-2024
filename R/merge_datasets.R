@@ -59,26 +59,25 @@ hh_dataset <- hh_tables[1:2] |>
     by = join_by(qhclust, qhnumber),
     relationship = "many-to-many"
   ) |>
-  rename(centroidid = qhclust) |>
   mutate(
     country = "Nigeria",
     year = 2024,
+    centroidid = paste0("NG00", qhclust), ## standardize centroidid to 8 character length as recommended by PHIA
     qhnumber = if_else(
-      nchar(qhnumber) < 2,
-      paste0("0", as.character(qhnumber)),
-      as.character(qhnumber)
+      nchar(qhnumber) == 2,
+      paste0("0000", qhnumber), ## standardize household number to 6 character length to generate householdid of 14 character length as recommended
+      paste0("00000", qhnumber)
       ),
     qhline = if_else(
       nchar(qhline) < 2,
-      paste0("0", as.character(qhline)),
+      paste0("0", qhline),
       as.character(qhline)
     ),
-    householdid = paste0(as.character(centroidid), qhnumber),
+    householdid = paste0(centroidid, qhnumber),
     personid = paste0(householdid, qhline)
     ) |>
-  relocate(country, year, centroidid, householdid, personid, .before = qhnumber
-) |>
-  select(!c(qhnumber, qhline))
+  relocate(country, year, centroidid, householdid, personid, .before = qhnumber) |>
+  select(!c(qhclust, qhnumber, qhline, qhaddress, ghlatitude, ghlatitude_1, ghlongitude, ghlongitude_1))
 
 
 hh_dataset |>
@@ -131,26 +130,25 @@ child_roster <- ind_tables[[13]] |>
 ind_dataset <- all_but_roster |>
   reduce(full_join, by = join_by(qcluster, qnumber, qline)) |>
   full_join(child_roster, by = join_by(qcluster, qnumber, qline, childnamex)) |>
-  rename(
-    centroidid = qcluster,
-    ) |>
   mutate(
     country = "Nigeria",
     year = 2024,
+    centroidid = paste0("NG00", qcluster), ## standardize centroidid to 8 character length as recommended by PHIA
     qnumber = if_else(
-      nchar(qnumber) < 2,
-      paste0("0", as.character(qnumber)),
-      as.character(qnumber)
-      ),
+      nchar(qnumber) == 2,
+      paste0("0000", qnumber), ## standardize household number to 6 character length to generate householdid of 14 character length as recommended
+      paste0("00000", qnumber)
+    ),
     qline = if_else(
       nchar(qline) < 2,
-      paste0("0", as.character(qline)),
+      paste0("0", qline),
       as.character(qline)
-      ),
-    householdid = paste0(as.character(centroidid), qnumber),
+    ),
+    householdid = paste0(centroidid, qnumber),
     personid = paste0(householdid, qline)
   ) |>
-  select(!c(qnumber, qline)) |>
+  rename(ptid = ptid1) |>
+  select(!c(qcluster, qnumber, qline, ptid_link)) |>
   relocate(country, year, centroidid, householdid, personid, .before = qviolen)
 
 
@@ -204,7 +202,7 @@ ldms_trem <- lab_tables[[1]] |>
 
 capi_ldms_dataset <- hh_dataset |>
   full_join(ind_dataset, by = join_by(country, year, centroidid, householdid, personid)) |>
-  full_join(ldms_trem, by = join_by(ptid1 == id1))
+  full_join(ldms_trem, by = join_by(ptid == id1))
 
 
 capi_ldms_dataset |>
