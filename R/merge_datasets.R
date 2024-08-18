@@ -1,5 +1,5 @@
 
-# install required packages ---------------------------------------------------------------------------------------
+# load packages and import files --------------------------------------------------------------------------
 
 if (!requireNamespace("pacman")) install.packages("pacman", dependencies = TRUE)
 
@@ -13,11 +13,28 @@ pacman::p_load(
 )
 
 
-# household interview and roster ---------------------------------------------------------------------------------
+# Define folder paths
+hh_folder <- dir_ls(here("data", "household"))
 
-folder_path <- dir_ls(here("data", "household"))
+ind_folder <- dir_ls(here("data", "individual"))
 
-### the folder_path contains the following datasets
+lab_folder <- dir_ls(here("data", "laboratory"))
+
+
+# Function to read and clean data. The cleaning involves removing the metadata variables and the `unique id` variable derived from the individual cluster, household and person identifier as appropriate.
+
+read_and_clean <- function(path) {
+  read_csv(path, na = c("", "NA", "NULL", "null")) |>
+    clean_names() |>
+    select(!c(id, created_at, updated_at, file_stored_date, unique_id))
+}
+
+
+# household dataset -----------------------------------------------------------------------------------------------
+
+## Load and clean household data
+
+# the folder_path contains the following datasets
 
 # 1. hh_identification,
 # 2. hh_characteristics
@@ -25,23 +42,18 @@ folder_path <- dir_ls(here("data", "household"))
 # 4. hh_members and
 # 5. hh_schedule tables
 
-
-## import the 5 tables and remove the 'id', 'created_at', 'updated_at' and 'file_stored_date' metadata from the tables as they are not from CAPI. Also dropping the 'unique_id' since it's created from the cluster id (qhclust) and id of household (qhnumber).
-
-hh_tables <- map(
-  folder_path, \(df) read_csv(df, na = c("", "NA", "NULL", "null"))
-) |>
-  map(clean_names) |>
-  map(\(df) select(df, !c(id, created_at, updated_at, file_stored_date, unique_id)))
+hh_data <- hh_folder |>
+  map(read_and_clean)
 
 
-## join the three tables from the household questionnaires, then the two tables from the roster separately, then merge the two together.
-## The hh_deaths table has a few households that had more than one deaths, so we transpose to give one record per household with the information about deaths added as new columns
+# Merge household datasets
 
-hh_dataset <- hh_tables[1:2] |>
+## The hh_deaths table has a few households that had more than one deaths, so we transpose to give one record per household with the information about deaths added as new columns before merging with the other datasets
+
+hh_dataset <- hh_data[1:2] |>
   reduce(full_join, by = join_by(qhclust, qhnumber)) |>
   full_join(
-    hh_tables[[3]] |>
+    hh_data[[3]] |>
       pivot_wider(
         id_cols = c(qhclust, qhnumber, qh40, qh41, qh42, qh43, qh44, qh45, qh46, qh47, qh48, line_num2),
         names_from = qhmdline,
@@ -52,29 +64,20 @@ hh_dataset <- hh_tables[1:2] |>
   ) |>
   full_join(
     list(
-      hh_tables[[4]],
-      hh_tables[[5]] |> rename(qhline = qh01)  ## table 4 has the same variable named as 'qhline' so renaming for consistency
+      hh_data[[4]],
+      hh_data[[5]] |> rename(qhline = qh01)  ## table 4 has the same variable named as 'qhline' so renaming for consistency
       ) |>
       reduce(full_join, by = join_by(qhclust, qhnumber, qhline)),
-    by = join_by(qhclust, qhnumber),
-    relationship = "many-to-many"
+    by = join_by(qhclust, qhnumber)
   ) |>
   mutate(
     country = "Nigeria",
     year = 2024,
-    centroidid = paste0("NG00", qhclust), ## standardize centroidid to 8 character length as recommended by PHIA
-    qhnumber = if_else(
-      nchar(qhnumber) == 2,
-      paste0("0000", qhnumber), ## standardize household number to 6 character length to generate householdid of 14 character length as recommended
-      paste0("00000", qhnumber)
-      ),
-    qhline = if_else(
-      nchar(qhline) < 2,
-      paste0("0", qhline),
-      as.character(qhline)
-    ),
-    householdid = paste0(centroidid, qhnumber),
-    personid = paste0(householdid, qhline)
+    centroidid = str_c("NG00", qhclust),   ## standardize centroid id to 8 character length
+    qhnumber = str_pad(qhnumber, 6, pad = "0"), ## standardize qhnumber to six character length
+    qhline = str_pad(qhline, 2, pad = "0"),   ## standardize qhline to 2 character length
+    householdid = str_c(centroidid, qhnumber), ## housholdid has 14 character length (8 + 6)
+    personid = str_c(householdid, qhline)      ## personsid as 16 character length(14 + 2)
     ) |>
   relocate(country, year, centroidid, householdid, personid, .before = qhnumber) |>
   select(!c(qhclust, qhnumber, qhline, qhaddress, ghlatitude, ghlatitude_1, ghlongitude, ghlongitude_1))
@@ -89,9 +92,9 @@ hh_dataset |>
 
 
 
-# individual interview --------------------------------------------------------------------------------------------
+# individual dataset ----------------------------------------------------------------------------------------------
 
-folder_path2 <- dir_ls(here("data", "individual"))
+# Load and clean individual data
 
 ### the folder_path contains the following tables:
 # 1. individual identification,
@@ -108,44 +111,27 @@ folder_path2 <- dir_ls(here("data", "individual"))
 # 12. mother pregnant care HIV screening, and
 # 13. child roster for mother
 
+ind_data <- ind_folder |>
+  map(read_and_clean)
 
-ind_tables <- map(
-  folder_path2, \(df) read_csv(df, na = c("", "NA", "NULL", "null"))
-) |>
-  map(clean_names)
-
-
-## remove metadata from the datasets. Also dropping the unique_id here because it already concatenates the cluster id, household id and the person id (albeit not in the standard format).  The child roster for mother needs additional cleaning so it is handled separately.
-
-all_but_roster <- map(ind_tables[1:12], \(df) select(df, !c(id, created_at, updated_at, file_stored_date, unique_id)))
-
-
-child_roster <- ind_tables[[13]] |>
-  select(!c(id, created_at, updated_at, file_stored_date, unique_id)) |>
+# Special handling for child roster to remove observations that were not part of the pilot data
+child_roster <- ind_data[[13]] |>
   filter(is.na(childlisted), qnumber != 9907)
 
 
-## merge all the individual interview datasets together
+## merge all the individual tables
 
-ind_dataset <- all_but_roster |>
+ind_dataset <- ind_data[1:12] |>
   reduce(full_join, by = join_by(qcluster, qnumber, qline)) |>
   full_join(child_roster, by = join_by(qcluster, qnumber, qline, childnamex)) |>
   mutate(
     country = "Nigeria",
     year = 2024,
-    centroidid = paste0("NG00", qcluster), ## standardize centroidid to 8 character length as recommended by PHIA
-    qnumber = if_else(
-      nchar(qnumber) == 2,
-      paste0("0000", qnumber), ## standardize household number to 6 character length to generate householdid of 14 character length as recommended
-      paste0("00000", qnumber)
-    ),
-    qline = if_else(
-      nchar(qline) < 2,
-      paste0("0", qline),
-      as.character(qline)
-    ),
-    householdid = paste0(centroidid, qnumber),
-    personid = paste0(householdid, qline)
+    centroidid = str_c("NG00", qcluster), ## standardize centroidid to 8 character length
+    qnumber = str_pad(qnumber, 6, pad = "0"), ## standardize qnumber to 6 character length
+    qline = str_pad(qline, 2, pad = "0"),  ## standardize qline to 2 character length
+    householdid = str_c(centroidid, qnumber),
+    personid = str_c(householdid, qline)
   ) |>
   rename(ptid = ptid1) |>
   select(!c(qcluster, qnumber, qline, ptid_link)) |>
@@ -163,20 +149,15 @@ ind_dataset |>
 
 # satellite lab data -----------------------------------------------------------------------------------------------
 
-folder_path3 <- dir_ls(
-  here("data", "laboratory")
-)
-
 ## the folder contains the LDMS TREM and GEENIUS datasets. However, the LDMS TREM has both the QA and the GEENIUS results so we are using only the TREM data
 
-lab_tables <- map(
-  folder_path3, \(df) read_csv(df, na = c("", "NA", "NULL", "null"))
-) |>
+lab_data <- lab_folder |>
+  map(\(df) read_csv(df, na = c("", "NA", "NULL", "null"))) |>
   map(clean_names)
 
 
 ## extract each table and format/create the date columns as appropriate
-ldms_trem <- lab_tables[[1]] |>
+ldms_trem <- lab_data[[1]] |>
   select(id1:vid, testnm:result, finres, qadisc) |>
   pivot_wider(
     id_cols = c(id1:vid, finres, qadisc),
